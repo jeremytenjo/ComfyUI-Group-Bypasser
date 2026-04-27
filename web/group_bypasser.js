@@ -21,33 +21,6 @@ function queueRefresh(node, force = false) {
   }, 0);
 }
 
-function showRefreshToast() {
-  try {
-    app.extensionManager?.toast?.add?.({
-      severity: "success",
-      summary: "Updated",
-      detail: "Groups refreshed",
-      life: 2500,
-    });
-    return;
-  } catch (error) {
-    // Fall through to simpler notification paths.
-  }
-
-  try {
-    app.extensionManager?.toast?.addAlert?.("Groups refreshed");
-    return;
-  } catch (error) {
-    // Final fallback.
-  }
-
-  try {
-    alert("Groups refreshed");
-  } catch (error) {
-    // No-op if alerts are unavailable.
-  }
-}
-
 function isTargetNodeDef(nodeData) {
   return String(nodeData?.name || "") === NODE_NAME;
 }
@@ -293,13 +266,6 @@ function refreshNode(node) {
 
   node.__groupBypasserSignature = signature;
   removeDynamicWidgets(node);
-
-  const refreshWidget = node.addWidget("button", "↻ Refresh Groups", null, () => {
-    // Queue a safe full rebuild after the current click lifecycle.
-    forceFullRefresh(node);
-    showRefreshToast();
-  });
-  refreshWidget.__groupBypasserDynamic = true;
 
   for (const entry of groupsByTitle) {
     const widgetName = entry.title;
