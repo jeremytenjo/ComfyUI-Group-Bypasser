@@ -1,10 +1,52 @@
 import { app } from "../../scripts/app.js";
 
 const NODE_NAME = "ComfyUI-Group-Bypasser";
+const NODE_DISPLAY_NAME = "Group Bypasser";
 const MODE_ACTIVE = LiteGraph.ALWAYS;
 const MODE_BYPASS = 4;
 const STATE_KEY = "group_bypasser_states";
 const REFRESH_MS = 400;
+
+function queueRefresh(node, force = false) {
+  if (force) {
+    node.__groupBypasserForceRefresh = true;
+  }
+  if (node.__groupBypasserRefreshQueued) {
+    return;
+  }
+  node.__groupBypasserRefreshQueued = true;
+  setTimeout(() => {
+    node.__groupBypasserRefreshQueued = false;
+    refreshNode(node);
+  }, 0);
+}
+
+function showRefreshToast() {
+  try {
+    app.extensionManager?.toast?.add?.({
+      severity: "success",
+      summary: "Updated",
+      detail: "Groups refreshed",
+      life: 2500,
+    });
+    return;
+  } catch (error) {
+    // Fall through to simpler notification paths.
+  }
+
+  try {
+    app.extensionManager?.toast?.addAlert?.("Groups refreshed");
+    return;
+  } catch (error) {
+    // Final fallback.
+  }
+
+  try {
+    alert("Groups refreshed");
+  } catch (error) {
+    // No-op if alerts are unavailable.
+  }
+}
 
 function isTargetNodeDef(nodeData) {
   return String(nodeData?.name || "") === NODE_NAME;
@@ -14,6 +56,16 @@ function isTargetNodeInstance(node) {
   const candidates = [node?.type, node?.comfyClass, node?.constructor?.type, node?.constructor?.title]
     .map((value) => String(value || ""));
   return candidates.includes(NODE_NAME);
+}
+
+function syncNodeTitle(node) {
+  if (!node) {
+    return;
+  }
+  const title = String(node.title || "").trim();
+  if (!title || title === NODE_NAME || title === "ComfyUI-Group-Bypasser") {
+    node.title = NODE_DISPLAY_NAME;
+  }
 }
 
 function normalizeTitle(title) {
@@ -119,14 +171,14 @@ function findWidget(node, name) {
   return (node.widgets || []).find((widget) => widget.name === name);
 }
 
-function applyModeToGroupTitle(node, groupEntry, enabled) {
+function applyModeToGroupTitle(node, groupEntry, bypassed) {
   const graph = getCurrentGraph(node);
   if (!graph) {
     return;
   }
 
   const seenNodeIds = new Set();
-  const mode = enabled ? MODE_ACTIVE : MODE_BYPASS;
+  const mode = bypassed ? MODE_BYPASS : MODE_ACTIVE;
 
   for (const group of groupEntry.groups) {
     for (const targetNode of getGroupNodes(group, graph)) {
@@ -144,10 +196,10 @@ function applyModeToGroupTitle(node, groupEntry, enabled) {
   graph.setDirtyCanvas(true, true);
 }
 
-function resolveEnabledFromGroups(node, groupEntry) {
+function resolveBypassFromGroups(node, groupEntry) {
   const graph = getCurrentGraph(node);
   if (!graph) {
-    return true;
+    return false;
   }
 
   const seenNodeIds = new Set();
@@ -171,9 +223,9 @@ function resolveEnabledFromGroups(node, groupEntry) {
   }
 
   if (!anyFound) {
-    return true;
+    return false;
   }
-  return !allBypassed;
+  return allBypassed;
 }
 
 function getEntryByKey(node, key) {
@@ -186,14 +238,14 @@ function computeSignature(groupsByTitle) {
 
 function syncWidgets(node, groupsByTitle, stateStore) {
   for (const entry of groupsByTitle) {
-    const widgetName = `Bypass ${entry.title}`;
+    const widgetName = entry.title;
     const widget = findWidget(node, widgetName);
     if (!widget || !widget.__groupBypasserDynamic) {
       continue;
     }
-    const isEnabled = resolveEnabledFromGroups(node, entry);
-    stateStore[entry.key] = isEnabled;
-    widget.value = isEnabled;
+    const isBypassed = resolveBypassFromGroups(node, entry);
+    stateStore[entry.key] = isBypassed;
+    widget.value = isBypassed;
   }
 }
 
@@ -208,6 +260,10 @@ function removeDynamicWidgets(node) {
   }
 }
 
+function forceFullRefresh(node) {
+  queueRefresh(node, true);
+}
+
 function refreshNode(node) {
   if (!isTargetNodeInstance(node)) {
     return;
@@ -216,6 +272,10 @@ function refreshNode(node) {
   const groupsByTitle = collectGroupsByTitle(node);
   const stateStore = ensureStateStore(node);
   const signature = computeSignature(groupsByTitle);
+  const forceRefresh = Boolean(node.__groupBypasserForceRefresh);
+  if (forceRefresh) {
+    node.__groupBypasserForceRefresh = false;
+  }
 
   // Drop stale state keys.
   const activeKeys = new Set(groupsByTitle.map((entry) => entry.key));
@@ -225,7 +285,7 @@ function refreshNode(node) {
     }
   }
 
-  if (node.__groupBypasserSignature === signature) {
+  if (!forceRefresh && node.__groupBypasserSignature === signature) {
     syncWidgets(node, groupsByTitle, stateStore);
     app.graph?.setDirtyCanvas?.(true, true);
     return;
@@ -234,33 +294,36 @@ function refreshNode(node) {
   node.__groupBypasserSignature = signature;
   removeDynamicWidgets(node);
 
+  const refreshWidget = node.addWidget("button", "↻ Refresh Groups", null, () => {
+    // Queue a safe full rebuild after the current click lifecycle.
+    forceFullRefresh(node);
+    showRefreshToast();
+  });
+  refreshWidget.__groupBypasserDynamic = true;
+
   for (const entry of groupsByTitle) {
-    const widgetName = `Bypass ${entry.title}`;
-    const isEnabled = resolveEnabledFromGroups(node, entry);
-    stateStore[entry.key] = isEnabled;
+    const widgetName = entry.title;
+    const isBypassed = resolveBypassFromGroups(node, entry);
+    stateStore[entry.key] = isBypassed;
 
     const widget = node.addWidget(
       "toggle",
       widgetName,
-      isEnabled,
+      isBypassed,
       (value) => {
-        const enabled = Boolean(value);
+        const bypassed = Boolean(value);
         const latestEntry = getEntryByKey(node, entry.key);
         if (!latestEntry) {
           return;
         }
-        stateStore[entry.key] = enabled;
-        applyModeToGroupTitle(node, latestEntry, enabled);
-      },
-      {
-        on: "enabled",
-        off: "disabled",
+        stateStore[entry.key] = bypassed;
+        applyModeToGroupTitle(node, latestEntry, bypassed);
       },
     );
 
     widget.__groupBypasserDynamic = true;
     widget.__groupBypasserKey = entry.key;
-    widget.value = isEnabled;
+    widget.value = isBypassed;
   }
 
   node.setSize([node.size[0], node.computeSize()[1]]);
@@ -272,6 +335,7 @@ function bindNode(node) {
     return;
   }
   node.__groupBypasserBound = true;
+  syncNodeTitle(node);
 
   const originalOnRemoved = node.onRemoved;
   node.onRemoved = function () {
@@ -284,7 +348,13 @@ function bindNode(node) {
 
   // Keep frame list up-to-date while preserving saved states by title key.
   node.__groupBypasserRefreshTimer = setInterval(() => {
-    if (!node.graph) {
+    const graph = getCurrentGraph(node);
+    if (!graph) {
+      return;
+    }
+    if (node.__groupBypasserGraphRef !== graph) {
+      node.__groupBypasserGraphRef = graph;
+      forceFullRefresh(node);
       return;
     }
     refreshNode(node);
@@ -305,17 +375,17 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       const result = originalOnNodeCreated?.apply(this, arguments);
       bindNode(this);
-      setTimeout(() => refreshNode(this), 0);
-      setTimeout(() => refreshNode(this), 80);
-      setTimeout(() => refreshNode(this), 250);
+      queueRefresh(this, true);
+      setTimeout(() => queueRefresh(this, true), 80);
+      setTimeout(() => queueRefresh(this, true), 250);
       return result;
     };
 
     nodeType.prototype.onConfigure = function () {
       const result = originalOnConfigure?.apply(this, arguments);
       bindNode(this);
-      setTimeout(() => refreshNode(this), 0);
-      setTimeout(() => refreshNode(this), 80);
+      queueRefresh(this, true);
+      setTimeout(() => queueRefresh(this, true), 80);
       return result;
     };
   },
@@ -325,7 +395,7 @@ app.registerExtension({
       return;
     }
     bindNode(node);
-    setTimeout(() => refreshNode(node), 0);
-    setTimeout(() => refreshNode(node), 80);
+    queueRefresh(node, true);
+    setTimeout(() => queueRefresh(node, true), 80);
   },
 });

@@ -17,5 +17,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ComfyUI-Group-Bypasser": "ComfyUI-Group-Bypasser",
+    "ComfyUI-Group-Bypasser": "Group Bypasser",
 }
