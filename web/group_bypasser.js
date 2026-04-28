@@ -6,6 +6,10 @@ const MODE_ACTIVE = LiteGraph.ALWAYS;
 const MODE_BYPASS = 4;
 const STATE_KEY = "group_bypasser_states";
 const REFRESH_MS = 400;
+const ALPHABETICAL_COLLATOR = new Intl.Collator(undefined, {
+  sensitivity: "base",
+  numeric: true,
+});
 
 function queueRefresh(node, force = false) {
   if (force) {
@@ -127,7 +131,9 @@ function collectGroupsByTitle(node) {
     deduped.get(key).groups.push(group);
   }
 
-  return Array.from(deduped.values()).sort((a, b) => a.title.localeCompare(b.title));
+  return Array.from(deduped.values()).sort(
+    (a, b) => ALPHABETICAL_COLLATOR.compare(a.title, b.title) || a.key.localeCompare(b.key),
+  );
 }
 
 function ensureStateStore(node) {
