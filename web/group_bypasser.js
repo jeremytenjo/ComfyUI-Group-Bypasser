@@ -258,6 +258,10 @@ function computeSignature(groupsByTitle) {
   return groupsByTitle.map((entry) => entry.key).join("|");
 }
 
+function hasStoredState(stateStore, key) {
+  return Object.prototype.hasOwnProperty.call(stateStore, key);
+}
+
 function syncWidgets(node, groupsByTitle, stateStore) {
   for (const entry of groupsByTitle) {
     const widgetName = entry.title;
@@ -265,9 +269,16 @@ function syncWidgets(node, groupsByTitle, stateStore) {
     if (!widget || !widget.__groupBypasserDynamic) {
       continue;
     }
-    const isBypassed = resolveBypassFromGroups(node, entry);
-    stateStore[entry.key] = isBypassed;
-    widget.value = isBypassed;
+    const hasSavedState = hasStoredState(stateStore, entry.key);
+    const actualBypassed = resolveBypassFromGroups(node, entry);
+    const targetBypassed = hasSavedState ? Boolean(stateStore[entry.key]) : actualBypassed;
+    if (!hasSavedState) {
+      stateStore[entry.key] = targetBypassed;
+    }
+    if (actualBypassed !== targetBypassed) {
+      applyModeToGroupTitle(node, entry, targetBypassed);
+    }
+    widget.value = targetBypassed;
   }
 }
 
@@ -318,8 +329,14 @@ function refreshNode(node) {
 
   for (const entry of groupsByTitle) {
     const widgetName = entry.title;
-    const isBypassed = resolveBypassFromGroups(node, entry);
+    const actualBypassed = resolveBypassFromGroups(node, entry);
+    const isBypassed = hasStoredState(stateStore, entry.key)
+      ? Boolean(stateStore[entry.key])
+      : actualBypassed;
     stateStore[entry.key] = isBypassed;
+    if (actualBypassed !== isBypassed) {
+      applyModeToGroupTitle(node, entry, isBypassed);
+    }
 
     const widget = node.addWidget(
       "toggle",
