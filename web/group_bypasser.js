@@ -65,6 +65,34 @@ function getGroupBounds(group) {
   return bounds;
 }
 
+function collectNestedGraphs(rootGraph) {
+  if (!rootGraph) {
+    return [];
+  }
+
+  const collected = [];
+  const stack = [rootGraph];
+  const seen = new Set();
+
+  while (stack.length) {
+    const graph = stack.pop();
+    if (!graph || seen.has(graph)) {
+      continue;
+    }
+    seen.add(graph);
+    collected.push(graph);
+
+    for (const graphNode of graph._nodes || []) {
+      const childGraph = graphNode?.subgraph;
+      if (childGraph && !seen.has(childGraph)) {
+        stack.push(childGraph);
+      }
+    }
+  }
+
+  return collected;
+}
+
 function getGroupNodes(group, graph) {
   if (!group || !graph) {
     return [];
@@ -102,33 +130,35 @@ function getGroupNodes(group, graph) {
 }
 
 function collectGroupsByTitle(node) {
-  const graph = getCurrentGraph(node);
-  if (!graph) {
+  const rootGraph = getCurrentGraph(node);
+  if (!rootGraph) {
     return [];
   }
 
-  const sourceGroups = Array.isArray(graph._groups)
-    ? graph._groups
-    : Array.isArray(graph.groups)
-      ? graph.groups
-      : [];
-
   const deduped = new Map();
 
-  for (const group of sourceGroups) {
-    const title = normalizeTitle(group?.title);
-    if (!title) {
-      continue;
+  for (const graph of collectNestedGraphs(rootGraph)) {
+    const sourceGroups = Array.isArray(graph._groups)
+      ? graph._groups
+      : Array.isArray(graph.groups)
+        ? graph.groups
+        : [];
+
+    for (const group of sourceGroups) {
+      const title = normalizeTitle(group?.title);
+      if (!title) {
+        continue;
+      }
+      const key = keyForTitle(title);
+      if (!deduped.has(key)) {
+        deduped.set(key, {
+          key,
+          title,
+          groups: [],
+        });
+      }
+      deduped.get(key).groups.push({ group, graph });
     }
-    const key = keyForTitle(title);
-    if (!deduped.has(key)) {
-      deduped.set(key, {
-        key,
-        title,
-        groups: [],
-      });
-    }
-    deduped.get(key).groups.push(group);
   }
 
   return Array.from(deduped.values()).sort(
@@ -151,49 +181,62 @@ function findWidget(node, name) {
 }
 
 function applyModeToGroupTitle(node, groupEntry, bypassed) {
-  const graph = getCurrentGraph(node);
-  if (!graph) {
+  if (!groupEntry?.groups?.length) {
     return;
   }
 
-  const seenNodeIds = new Set();
+  const seenNodeIds = new WeakMap();
   const mode = bypassed ? MODE_BYPASS : MODE_ACTIVE;
 
-  for (const group of groupEntry.groups) {
+  for (const { group, graph } of groupEntry.groups) {
+    if (!group || !graph) {
+      continue;
+    }
+    let graphSeenIds = seenNodeIds.get(graph);
+    if (!graphSeenIds) {
+      graphSeenIds = new Set();
+      seenNodeIds.set(graph, graphSeenIds);
+    }
     for (const targetNode of getGroupNodes(group, graph)) {
       if (!(targetNode && Number.isInteger(targetNode.id) && targetNode.id >= 0)) {
         continue;
       }
-      if (seenNodeIds.has(targetNode.id)) {
+      if (graphSeenIds.has(targetNode.id)) {
         continue;
       }
-      seenNodeIds.add(targetNode.id);
+      graphSeenIds.add(targetNode.id);
       targetNode.mode = mode;
     }
+    graph.setDirtyCanvas?.(true, true);
   }
-
-  graph.setDirtyCanvas(true, true);
 }
 
 function resolveBypassFromGroups(node, groupEntry) {
-  const graph = getCurrentGraph(node);
-  if (!graph) {
+  if (!groupEntry?.groups?.length) {
     return false;
   }
 
-  const seenNodeIds = new Set();
+  const seenNodeIds = new WeakMap();
   let allBypassed = true;
   let anyFound = false;
 
-  for (const group of groupEntry.groups) {
+  for (const { group, graph } of groupEntry.groups) {
+    if (!group || !graph) {
+      continue;
+    }
+    let graphSeenIds = seenNodeIds.get(graph);
+    if (!graphSeenIds) {
+      graphSeenIds = new Set();
+      seenNodeIds.set(graph, graphSeenIds);
+    }
     for (const targetNode of getGroupNodes(group, graph)) {
       if (!(targetNode && Number.isInteger(targetNode.id) && targetNode.id >= 0)) {
         continue;
       }
-      if (seenNodeIds.has(targetNode.id)) {
+      if (graphSeenIds.has(targetNode.id)) {
         continue;
       }
-      seenNodeIds.add(targetNode.id);
+      graphSeenIds.add(targetNode.id);
       anyFound = true;
       if (targetNode.mode !== MODE_BYPASS) {
         allBypassed = false;
